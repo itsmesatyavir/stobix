@@ -1,12 +1,11 @@
-import inquirer from 'inquirer';
-import ora from 'ora';
-import chalk from 'chalk';
+
 import fs from 'fs/promises';
 import axios from 'axios';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { SocksProxyAgent } from 'socks-proxy-agent';
-import cfonts from 'cfonts';
+import HttpsProxyAgent from 'https-proxy-agent';
+import chalk from 'chalk';
 import { Wallet } from 'ethers';
+import cfonts from 'cfonts';
+import inquirer from 'inquirer';
 
 function centerText(text, color = 'blueBright') {
   const terminalWidth = process.stdout.columns || 80;
@@ -16,257 +15,130 @@ function centerText(text, color = 'blueBright') {
 }
 
 const baseHeaders = {
-  'accept': 'application/json, text/plain, */*',
-  'content-type': 'application/json',
-  'Referer': 'https://app.stobix.com/',
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36',
+  'Content-Type': 'application/json',
+  'Referer': 'https://stobix.com/',
+  'Origin': 'https://stobix.com'
 };
 
 function createAxiosInstance(proxy) {
-  const instance = axios.create({
+  const agent = proxy ? new HttpsProxyAgent(`http://${proxy}`) : undefined;
+  return axios.create({
     headers: baseHeaders,
-    withCredentials: true,
+    httpsAgent: agent,
+    proxy: false,
   });
-  if (proxy) {
-    instance.defaults.httpsAgent = newAgent(proxy);
-  }
-  return instance;
 }
 
-function newAgent(proxy) {
-  if (proxy.startsWith('http://') || proxy.startsWith('https://')) {
-    return new HttpsProxyAgent(proxy);
-  } else if (proxy.startsWith('socks4://') || proxy.startsWith('socks5://')) {
-    return new SocksProxyAgent(proxy);
-  } else {
-    console.log(chalk.red(`Unsupported proxy type: ${proxy}`));
-    return null;
-  }
-}
-
-function delay(ms) {
+async function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function countdown(ms) {
-  const seconds = Math.floor(ms / 1000);
-  for (let i = seconds; i > 0; i--) {
-    process.stdout.write(chalk.grey(`\rWaiting ${i} seconds... `));
+async function countdown(seconds) {
+  while (seconds > 0) {
+    process.stdout.write(`\rWaiting ${seconds--} seconds...`);
     await delay(1000);
   }
-  process.stdout.write('\r' + ' '.repeat(50) + '\r');
+  process.stdout.write('\r                          \r');
 }
 
 async function readProxies() {
   try {
     const data = await fs.readFile('proxy.txt', 'utf-8');
-    return data
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0);
+    return data.split('\n').map(line => line.trim()).filter(line => line.length > 0);
   } catch (error) {
     console.error(chalk.red(`Error reading proxy.txt: ${error.message}`));
     return [];
   }
 }
 
-async function visitInvitePage(axiosInstance, reffcode) {
-  const inviteUrl = `https://stobix.com/invite/${reffcode}`;
-  const spinnerInvite = ora(' Getting Invite Link...').start();
-  try {
-    await axiosInstance.get(inviteUrl);
-    spinnerInvite.succeed(chalk.greenBright(' Invite Link Connected'));
-  } catch (error) {
-    spinnerInvite.fail(chalk.redBright(` Error While Connecting : ${error.message}`));
-    throw error;
-  }
-  await delay(1000);
+async function visitInvitePage(axiosInstance, refCode) {
+  await axiosInstance.get(`https://api.stobix.com/api/invite/${refCode}`);
 }
 
 async function authenticateWallet(axiosInstance, walletAddress, privateKey) {
-  const wallet = new Wallet(privateKey);
-  const spinnerAuth = ora(' Login Process...').start();
-
-  try {
-    const nonceUrl = 'https://api.stobix.com/v1/auth/nonce';
-    const noncePayload = { address: walletAddress };
-    const nonceResponse = await axiosInstance.post(nonceUrl, noncePayload);
-    const { nonce } = nonceResponse.data;
-
-    const message = `Sign this message to authenticate: ${nonce}`;
-    const signature = await wallet.signMessage(message);
-
-    const verifyUrl = 'https://api.stobix.com/v1/auth/web3/verify';
-    const verifyPayload = { nonce, signature, chain: 1 };
-    const verifyResponse = await axiosInstance.post(verifyUrl, verifyPayload);
-    const { token } = verifyResponse.data;
-
-    spinnerAuth.succeed(chalk.greenBright(' Login Successful'));
-    return token;
-  } catch (error) {
-    const errorMessage = error.response?.data?.message || error.response?.data?.error || error.message;
-    spinnerAuth.fail(chalk.redBright(`Login Failed: ${errorMessage}`));
-    throw error;
-  }
+  const response = await axiosInstance.post('https://api.stobix.com/api/wallet/auth', {
+    address: walletAddress,
+    sign: privateKey
+  });
+  return response.data.token;
 }
 
 async function completeTasks(axiosInstance, walletAddress, token) {
-  const loyaltyUrl = 'https://api.stobix.com/v1/loyalty';
-  const spinnerTasks = ora(' Getting Task List...').start();
-
-  try {
-    const loyaltyResponse = await axiosInstance.get(loyaltyUrl, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const tasks = loyaltyResponse.data.tasks;
-
-    spinnerTasks.succeed(chalk.greenBright(' Task List Received '));
-
-    for (const task of tasks) {
-      const { id, claimedAt } = task;
-
-      if (id === 'create_futures' || id === 'create_dual') {
-        continue;
-      }
-
-      if (claimedAt !== null) {
-        console.log(chalk.blue(` Task ${id} Already Completed`));
-        continue;
-      }
-
-      const spinnerClaim = ora(` Completing Task ${id}...`).start();
-      try {
-        const claimUrl = 'https://api.stobix.com/v1/loyalty/tasks/claim';
-        const claimPayload = { taskId: id };
-        const claimResponse = await axiosInstance.post(claimUrl, claimPayload, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const { points } = claimResponse.data;
-        spinnerClaim.succeed(chalk.greenBright(` Task ${id} Completed `));
-      } catch (error) {
-        const errorMessage = error.response?.data?.message || error.message;
-        spinnerClaim.fail(chalk.redBright(` Failed Completing Task ${id}: ${errorMessage}`));
-      }
-    }
-  } catch (error) {
-    const errorMessage = error.response?.data?.message || error.message;
-    spinnerTasks.fail(chalk.redBright(` Error Getting Task List: ${errorMessage}`));
-  }
+  const headers = { Authorization: `Bearer ${token}` };
+  await axiosInstance.post('https://api.stobix.com/api/tasks/complete', {
+    address: walletAddress,
+    taskId: 'official_telegram',
+  }, { headers });
 }
 
 async function startMining(axiosInstance, token) {
-  const loyaltyUrl = 'https://api.stobix.com/v1/loyalty';
-  const spinnerCheck = ora(' Checking Mining Status...').start();
-
-  try {
-    const loyaltyResponse = await axiosInstance.get(loyaltyUrl, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const { miningStartedAt, miningClaimAt } = loyaltyResponse.data.user;
-
-    if (miningStartedAt && miningClaimAt && new Date(miningClaimAt) > new Date()) {
-      spinnerCheck.succeed(chalk.greenBright(` Mining Already Started`));
-      return;
-    }
-
-    spinnerCheck.succeed(chalk.greenBright(' Mining Not Started, Ready To Start Mining...'));
-  } catch (error) {
-    const errorMessage = error.response?.data?.message || error.message;
-    spinnerCheck.fail(chalk.redBright(` Error Checking Mining Status: ${errorMessage}`));
-  }
-
-  const mineUrl = 'https://api.stobix.com/v1/loyalty/points/mine';
-  const spinnerMine = ora(' Starting Mining...').start();
-
-  try {
-    const mineResponse = await axiosInstance.post(mineUrl, {}, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const { amount, startedAt, claimAt } = mineResponse.data;
-    spinnerMine.succeed(chalk.greenBright(` Mining Started Successfully: ${amount} Points`));
-  } catch (error) {
-    const errorMessage = error.response?.data?.message || error.response?.data?.error || error.message;
-    spinnerMine.fail(chalk.redBright(` Failed To Start Mining: ${errorMessage}`));
-  }
+  const headers = { Authorization: `Bearer ${token}` };
+  await axiosInstance.post('https://api.stobix.com/api/mining/start', {}, { headers });
 }
 
 async function getUserPoints(axiosInstance, token) {
-  const loyaltyUrl = 'https://api.stobix.com/v1/loyalty';
-  const spinnerPoints = ora(' Getting Total Points...').start();
-
-  try {
-    const loyaltyResponse = await axiosInstance.get(loyaltyUrl, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const points = loyaltyResponse.data.user.points;
-    spinnerPoints.succeed(chalk.greenBright(` Total points: ${points}`));
-    return points;
-  } catch (error) {
-    const errorMessage = error.response?.data?.message || error.message;
-    spinnerPoints.fail(chalk.redBright(` Error Getting Total Points: ${errorMessage}`));
-    return null;
-  }
+  const headers = { Authorization: `Bearer ${token}` };
+  const res = await axiosInstance.get('https://api.stobix.com/api/user/me', { headers });
+  console.log(chalk.green(`Points: ${res.data.user.points}`));
 }
 
 async function main() {
-    cfonts.say('FOREST ARMY, {
-      font: 'block',
-      align: 'center',
-      colors: ['cyan', 'black'],
-    });
-    console.log(centerText("=== Telegram Channel 🚀 : Forest Army (@forestarmy) ==="));
-    console.log(centerText("✪ STOBIX AUTO REFERRAL + RUN NODE ✪ \n"));
-  
-    console.log(chalk.yellow('============ Auto Registration Bot ===========\n'));
-  
-    let { useProxy } = await inquirer.prompt([
+  cfonts.say('FOREST ARMY', {
+    font: 'block',
+    align: 'center',
+    colors: ['cyan', 'black'],
+  });
+  console.log(centerText("=== Telegram Channel : Forest Army (@forestarmy) ==="));
+  console.log(centerText("  STOBIX AUTO REFF + RUN NODE  \n"));
+
+  console.log(chalk.yellow('============ Auto Registration Bot ===========\n'));
+
+  let { useProxy } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'useProxy',
+      message: 'Do you want to use a proxy?',
+      default: false,
+    }
+  ]);
+
+  let proxyList = [];
+  let proxyMode = null;
+  if (useProxy) {
+    const proxyAnswer = await inquirer.prompt([
       {
-        type: 'confirm',
-        name: 'useProxy',
-        message: 'Do you want to use proxy?',
-        default: false,
+        type: 'list',
+        name: 'proxyType',
+        message: 'Choose proxy type:',
+        choices: ['Rotating', 'Static'],
       }
     ]);
-  
-    let proxyList = [];
-    let proxyMode = null;
-    if (useProxy) {
-      const proxyAnswer = await inquirer.prompt([
-        {
-          type: 'list',
-          name: 'proxyType',
-          message: 'Select proxy type:',
-          choices: ['Rotating', 'Static'],
-        }
-      ]);
-      proxyMode = proxyAnswer.proxyType;
-      proxyList = await readProxies();
-      if (proxyList.length > 0) {
-        console.log(chalk.blueBright(`Found ${proxyList.length} proxies.\n`));
-        if (proxyMode === 'Rotating') {
-          console.log(chalk.redBright('WARNING: You are using rotating proxies. To ensure referrals are detected, make sure your proxies support sticky sessions (same IP for one session).'));
-          console.log(chalk.yellow('How to setup sticky sessions:'));
-          console.log(chalk.yellow('- Login to your proxy provider dashboard'));
-          console.log(chalk.yellow('- Look for "Sticky Sessions" or "Session Persistence" settings.'));
-          console.log(chalk.yellow('- Enable sticky sessions and set duration (e.g., 1 minute) to keep same IP for all requests for one account.'));
-          console.log(chalk.yellow('- If not available, use static proxies or run without proxy.\n'));
-          const { confirmSticky } = await inquirer.prompt([
-            {
-              type: 'confirm',
-              name: 'confirmSticky',
-              message: 'Have you configured your proxies with sticky sessions?',
-              default: false,
-            }
-          ]);
-          if (!confirmSticky) {
-            console.log(chalk.yellow('Recommended to setup sticky sessions or run without proxy. Continue at your own risk of referrals not being counted.\n'));
+    proxyMode = proxyAnswer.proxyType;
+    proxyList = await readProxies();
+    if (proxyList.length > 0) {
+      console.log(chalk.blueBright(`Found ${proxyList.length} proxies.\n`));
+      if (proxyMode === 'Rotating') {
+        console.log(chalk.redBright('WARNING: You are using rotating proxies. Make sure your proxy supports sticky sessions.'));
+        console.log(chalk.yellow('- Login to your proxy provider dashboard.'));
+        console.log(chalk.yellow('- Enable sticky sessions or use static proxies.'));
+        const { confirmSticky } = await inquirer.prompt([
+          {
+            type: 'confirm',
+            name: 'confirmSticky',
+            message: 'Is your proxy set up with sticky sessions?',
+            default: false,
           }
+        ]);
+        if (!confirmSticky) {
+          console.log(chalk.yellow('Continuing without sticky session setup may result in failed referrals.\n'));
         }
-      } else {
-        console.log(chalk.yellow('proxy.txt file not found or empty. Continuing without proxy.\n'));
-        useProxy = false; 
       }
+    } else {
+      console.log(chalk.yellow('proxy.txt file is missing or empty. Proceeding without proxy.\n'));
+      useProxy = false;
     }
+  }
 
   let count;
   while (true) {
@@ -297,9 +169,9 @@ async function main() {
   ]);
 
   console.log(chalk.yellow('\n==================================='));
-  console.log(chalk.yellowBright(`Creating ${count} accounts..`));
-  console.log(chalk.yellowBright('Note: Please use responsibly 🗿'));
-  console.log(chalk.yellowBright('Tip: If you want to create many accounts, use proxies..'));
+  console.log(chalk.yellowBright(`Creating ${count} accounts ..`));
+  console.log(chalk.yellowBright('Note: Donâ€™t go crazy ðŸ—¿'));
+  console.log(chalk.yellowBright('Tip: If you want to go fast, use proxies..'));
   console.log(chalk.yellow('=====================================\n'));
 
   const fileName = 'accounts.json';
@@ -315,7 +187,7 @@ async function main() {
   let failCount = 0;
 
   for (let i = 0; i < count; i++) {
-    console.log(chalk.cyanBright(`\n================================ ACCOUNT ${i + 1}/${count} ================================`));
+    console.log(chalk.cyanBright(`\n================ ACCOUNT ${i + 1}/${count} ================`));
 
     let proxy = null;
     if (useProxy && proxyList.length > 0) {
@@ -328,7 +200,7 @@ async function main() {
     const walletAddress = wallet.address;
     const privateKey = wallet.privateKey.startsWith('0x') ? wallet.privateKey.slice(2) : wallet.privateKey;
 
-    console.log(chalk.greenBright(`✔️ Ethereum wallet successfully created: ${walletAddress}`));
+    console.log(chalk.greenBright(`âœ”ï¸ Ethereum wallet created: ${walletAddress}`));
 
     try {
       await visitInvitePage(axiosInstance, ref);
@@ -342,23 +214,18 @@ async function main() {
         privateKey: privateKey,
       });
       await fs.writeFile(fileName, JSON.stringify(accounts, null, 2));
-      console.log(chalk.greenBright('✔️ Account data successfully saved to accounts.json'));
+      console.log(chalk.greenBright('âœ”ï¸ Account data saved to accounts.json'));
       successCount++;
     } catch (error) {
-      console.log(chalk.red(`✖ Failed for ${walletAddress}: ${error.message}`));
+      console.log(chalk.red(`âœ– Failed for ${walletAddress}: ${error.message}`));
       failCount++;
     }
 
-    console.log(chalk.yellow(`\nProgress: ${i + 1}/${count} accounts registered. (Success: ${successCount}, Failed: ${failCount})`));
-    console.log(chalk.cyanBright('====================================================================\n'));
-
-    if (i < count - 1) {
-      const randomDelay = Math.floor(Math.random() * (60000 - 30000 + 1)) + 30000;
-      await countdown(randomDelay);
-    }
+    console.log(chalk.yellow(`\nProgress: ${i + 1}/${count} accounts processed...`));
   }
 
-  console.log(chalk.blueBright('\nRegistration completed.'));
+  console.log(chalk.greenBright(`\nSuccessfully created: ${successCount} account(s)`));
+  console.log(chalk.redBright(`Failed to create: ${failCount} account(s)`));
 }
 
 main();
