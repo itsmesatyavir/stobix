@@ -23,7 +23,7 @@ Join Stobix using this referral:
 - ✅ Auto-mining with hourly monitoring  
 - ✅ Colored terminal logs  
 - ✅ Robust retry and error handling  
-
+- ✅ Auto Refferal 
 ---
 
 ## Requirements
@@ -66,6 +66,12 @@ Start the bot using:
 node main
 ```
 
+> for auto referral
+
+```bash
+node reff
+```
+
 **The bot will:**
 
 1. Load and loop through all wallet keys  
@@ -73,7 +79,7 @@ node main
 3. Start mining if not already active  
 4. Check mining status every hour  
 5. Retry on failures automatically  
-
+6. Create multiple accounts (referral)
 ---
 
 ## Automated Tasks
