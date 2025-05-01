@@ -84,7 +84,7 @@ async function getUserPoints(axiosInstance, token) {
 }
 
 async function main() {
-  cfonts.say('FOREST ARMY', {
+  cfonts.say('FORESTARMY', {
     font: 'block',
     align: 'center',
     colors: ['cyan', 'black'],
